@@ -2,13 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::theme::Theme;
 
-pub fn header_style(theme: &Theme) -> Style {
-    Style::default()
-        .bg(theme.panel_bg)
-        .fg(theme.fg_primary)
-        .add_modifier(Modifier::BOLD)
-}
-
 pub fn selected_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight).fg(theme.fg_primary)
 }
@@ -126,4 +119,18 @@ pub fn visual_selection_style(theme: &Theme) -> Style {
 
 pub fn help_indicator_style(theme: &Theme) -> Style {
     Style::default().fg(theme.help_indicator).bg(theme.panel_bg)
+}
+
+pub fn range_bar_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.border_focused)
+}
+
+pub fn error_inline_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.message_error_fg)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.file_modified)
 }
