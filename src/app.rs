@@ -284,8 +284,6 @@ pub enum AnnotatedLine {
     RemoteThreadLine { thread_idx: usize },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
-    /// Top or bottom border of the file header box
-    FileHeaderBorder { file_idx: usize },
     /// Spacing between files
     Spacing,
 }
@@ -366,7 +364,6 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
-        | AnnotatedLine::FileHeaderBorder { file_idx }
         | AnnotatedLine::FileComment { file_idx, .. }
         | AnnotatedLine::HunkHeader { file_idx, .. }
         | AnnotatedLine::DiffLine { file_idx, .. }
@@ -4216,9 +4213,10 @@ impl App {
             self.down_released_since_arm = false;
         }
         self.diff_state.cursor_line = target.min(max_line);
-        self.skip_decoration_forward(max_line);
         if self.diff_state.cursor_line != prev_cursor {
             self.ensure_cursor_visible();
+            // Cap scroll change to cursor movement to prevent multi-line jumps
+            // when the view is catching up from a non-steady-state position.
             let cursor_moved = self.diff_state.cursor_line - prev_cursor;
             if self.diff_state.scroll_offset > prev_scroll + cursor_moved {
                 self.diff_state.scroll_offset = prev_scroll + cursor_moved;
@@ -4261,48 +4259,19 @@ impl App {
             self.up_released_since_arm = false;
         }
         self.diff_state.cursor_line = self.diff_state.cursor_line.saturating_sub(lines);
-        self.skip_decoration_backward();
         let visible_lines = self.diff_state.effective_visible_lines();
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        // Enforce top margin
         if self.diff_state.cursor_line < self.diff_state.scroll_offset + scroll_margin {
             self.diff_state.scroll_offset =
                 self.diff_state.cursor_line.saturating_sub(scroll_margin);
         }
+        // Ensure cursor is at least within the viewport (no bottom margin enforcement,
+        // just basic visibility — handles viewport shrink or wrap-mode changes).
         if self.diff_state.cursor_line >= self.diff_state.scroll_offset + visible_lines {
             self.diff_state.scroll_offset = self.diff_state.cursor_line - visible_lines + 1;
         }
         self.update_current_file_from_cursor();
-    }
-
-    fn is_decoration(annotation: &AnnotatedLine) -> bool {
-        matches!(
-            annotation,
-            AnnotatedLine::Spacing
-                | AnnotatedLine::FileHeader { .. }
-                | AnnotatedLine::FileHeaderBorder { .. }
-        )
-    }
-
-    fn skip_decoration_forward(&mut self, max_line: usize) {
-        while self.diff_state.cursor_line < max_line
-            && self
-                .line_annotations
-                .get(self.diff_state.cursor_line)
-                .is_some_and(Self::is_decoration)
-        {
-            self.diff_state.cursor_line += 1;
-        }
-    }
-
-    fn skip_decoration_backward(&mut self) {
-        while self.diff_state.cursor_line > 0
-            && self
-                .line_annotations
-                .get(self.diff_state.cursor_line)
-                .is_some_and(Self::is_decoration)
-        {
-            self.diff_state.cursor_line -= 1;
-        }
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
@@ -4615,7 +4584,7 @@ impl App {
                 bodies.insert(0, format!("github {}", thread.path));
                 Some(bodies.join(" "))
             }
-            AnnotatedLine::FileHeaderBorder { .. } | AnnotatedLine::Spacing => None,
+            AnnotatedLine::Spacing => None,
         }
     }
 
@@ -5729,11 +5698,10 @@ impl App {
     }
 
     fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
-        let header_lines = 3; // FileHeaderBorder + FileHeader + FileHeaderBorder
         if self.session.is_file_reviewed(file.display_path()) {
-            return header_lines;
+            return 1; // collapsed: header only
         }
-        header_lines + self.file_render_body_height(file_idx, file)
+        1 + self.file_render_body_height(file_idx, file) // header + body
     }
 
     /// File body height in lines (comments + content + trailing spacing),
@@ -8983,16 +8951,10 @@ impl App {
             }
             let path = file.display_path();
 
-            // File header box (only when shown — same gate as the renderer).
-            // The trailing Spacing from the previous file provides the
-            // blank line above, so no extra Spacing is needed here.
+            // File header (only when shown — same gate as the renderer).
             if !self.is_single_file_view {
                 self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
-                self.line_annotations
                     .push(AnnotatedLine::FileHeader { file_idx });
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
             }
 
             // If reviewed, skip all content for this file. Single-file
@@ -11520,17 +11482,17 @@ mod scroll_behavior_tests {
 
     #[test]
     fn zz_on_last_line_centers_cursor() {
+        // 40 diff lines + 4 overhead = 44 total. max_cursor = 42. Viewport = 20.
         let mut app = build_scroll_app(40, 20, 5);
-        let total = app.total_lines();
-        let last = app.max_cursor_line();
+        assert_eq!(app.total_lines(), 44);
+        let last = app.max_cursor_line(); // 42
 
         app.diff_state.cursor_line = last;
         app.center_cursor();
 
-        let expected_scroll = last.saturating_sub(10);
-        assert_eq!(app.diff_state.scroll_offset, expected_scroll);
-        assert_eq!(app.diff_state.cursor_line, last);
-        assert!(total > 40, "overhead lines must exist");
+        // scroll = cursor - viewport/2 = 42 - 10 = 32
+        assert_eq!(app.diff_state.scroll_offset, 32);
+        assert_eq!(app.diff_state.cursor_line, 42);
     }
 
     #[test]
