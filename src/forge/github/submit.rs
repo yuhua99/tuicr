@@ -62,8 +62,10 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             line,
             side: GhSide::Right,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: "[ISSUE] boom".to_string(),
             comment_id: "test-comment-id".to_string(),
         }
@@ -112,8 +114,10 @@ mod tests {
             path: PathBuf::from("src/main.rs"),
             line: 20,
             side: GhSide::Left,
+            counterpart_line: None,
             start_line: Some(15),
             start_side: Some(GhSide::Left),
+            old_path: None,
             body: "ranged".to_string(),
             comment_id: "test-comment-id".to_string(),
         };
@@ -137,8 +141,10 @@ mod tests {
             path: PathBuf::from("a.rs"),
             line: 7,
             side: GhSide::Left,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: String::new(),
             comment_id: "test-comment-id".to_string(),
         };

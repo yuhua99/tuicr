@@ -606,18 +606,31 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let host = parts.next()?;
     let owner = parts.next()?;
     let repo = parts.next()?;
-    if parts.next()? != "pull" {
+    let segment = parts.next()?;
+    let (number, repository) = if segment == "pull" {
+        // GitHub: /<owner>/<repo>/pull/<n>
+        (
+            parts.next()?.parse::<u64>().ok()?,
+            ForgeRepository::github(host, owner, strip_git_suffix(repo)),
+        )
+    } else if segment == "-" {
+        // GitLab: /<owner>/<repo>/-/merge_requests/<n>
+        if parts.next()? != "merge_requests" {
+            return None;
+        }
+        (
+            parts.next()?.parse::<u64>().ok()?,
+            ForgeRepository::gitlab(host, owner, strip_git_suffix(repo)),
+        )
+    } else {
         return None;
-    }
-    let number = parts.next()?.parse::<u64>().ok()?;
+    };
     if number == 0 {
         return None;
     }
 
     Some(PullRequestTarget::with_repository(
-        ForgeRepository::github(host, owner, strip_git_suffix(repo)),
-        number,
-        target,
+        repository, number, target,
     ))
 }
 
@@ -635,13 +648,23 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
         [owner, repo] => {
             ForgeRepository::github(DEFAULT_GITHUB_HOST, *owner, strip_git_suffix(repo))
         }
-        [host, owner, repo] => ForgeRepository::github(*host, *owner, strip_git_suffix(repo)),
+        [host, owner, repo] => forge_repo_from_host(host, owner, strip_git_suffix(repo)),
         _ => return None,
     };
 
     Some(PullRequestTarget::with_repository(
         repository, number, target,
     ))
+}
+
+/// Build a `ForgeRepository` from host/owner/repo, picking the forge kind
+/// based on the host name.
+fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
+    if host.contains("gitlab") {
+        ForgeRepository::gitlab(host, owner, repo)
+    } else {
+        ForgeRepository::github(host, owner, repo)
+    }
 }
 
 /// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
@@ -1156,6 +1179,18 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn parses_enterprise_pull_url_as_github_even_when_host_contains_gitlab() {
+        let target =
+            parse_pull_request_target("https://gitlab.ghe.company.com/agavra/tuicr/pull/125")
+                .unwrap();
+        let repository = target.repository.unwrap();
+        assert_eq!(target.number, 125);
+        assert_eq!(repository.kind, crate::forge::traits::ForgeKind::GitHub);
+        assert_eq!(repository.host, "gitlab.ghe.company.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
     fn rejects_malformed_pull_request_target() {
         let err = parse_pull_request_target("agavra/tuicr/pulls/125").unwrap_err();
         assert!(
@@ -1620,8 +1655,10 @@ Match host github-work
             path: PathBuf::from("src/lib.rs"),
             line,
             side: GhSide::Right,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: body.to_string(),
             comment_id: format!("cid-{line}"),
         }
