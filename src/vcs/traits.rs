@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -68,6 +69,74 @@ pub struct CommitInfo {
     pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
+}
+
+/// ResolvedRevisionRange is the VCS boundary's parsed form of a user-provided
+/// revision expression.
+///
+/// It preserves the knowledge gained while resolving the expression so callers
+/// do not need to keep passing the raw revision string through lower layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRevisionRange<'a> {
+    /// Commit IDs selected by the expression, oldest first.
+    pub commit_ids: Cow<'a, [String]>,
+
+    /// Boundary to use when materializing the file diff for this range.
+    pub diff_target: RevisionDiffTarget,
+}
+
+impl<'a> ResolvedRevisionRange<'a> {
+    /// Build a range from borrowed commit IDs and a diff boundary.
+    ///
+    /// Selection and reload paths use this when application state already
+    /// stores the selected commits and no clone is needed.
+    pub fn from_commit_ids(commit_ids: &'a [String], diff_target: RevisionDiffTarget) -> Self {
+        Self {
+            commit_ids: Cow::Borrowed(commit_ids),
+            diff_target,
+        }
+    }
+
+    /// Build a range from owned commit IDs and a diff boundary.
+    ///
+    /// VCS adapters use this after resolving both the commit list and the
+    /// old/new diff target that should be used to materialize the range.
+    pub fn from_owned_commit_ids(commit_ids: Vec<String>, diff_target: RevisionDiffTarget) -> Self {
+        Self {
+            commit_ids: Cow::Owned(commit_ids),
+            diff_target,
+        }
+    }
+}
+
+/// RevisionDiffTarget describes the old and new sides of a revision diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevisionDiffTarget {
+    /// Infer diff endpoints from the selected commit list.
+    ///
+    /// This is used when the user selected commits as commits,
+    /// for example through the inline commit selector,
+    /// reloading an active commit-range session,
+    /// or a backend that only reports a resolved commit list.
+    /// In this mode,
+    /// backends infer the old side from the oldest selected commit.
+    CommitList,
+
+    /// Compare the resolved base revision to the resolved head revision.
+    ///
+    /// This is used when the user supplied a revision expression,
+    /// for example `tuicr -r A..B`,
+    /// `tuicr -r A...B`,
+    /// or `tuicr -r REV`.
+    /// In this mode,
+    /// the parsed expression supplies the diff boundary directly.
+    Explicit {
+        /// Old side of the diff, or None for the empty tree.
+        base: Option<String>,
+
+        /// New side of the diff.
+        head: String,
+    },
 }
 
 /// Cheap repository change summary used by selection UIs before loading full diffs.
@@ -166,11 +235,11 @@ pub trait VcsBackend: Send {
         Ok(Vec::new())
     }
 
-    /// Resolve a revisions expression to a list of commit IDs (oldest first).
+    /// Resolve a revisions expression into the VCS boundary's parsed range.
     /// Returns error if not supported (default).
-    fn resolve_revisions(&self, _revisions: &str) -> Result<Vec<String>> {
+    fn resolve_revision_range(&self, _revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
-            "Revset resolution not supported for this VCS".into(),
+            "Revision range resolution not supported for this VCS".into(),
         ))
     }
 
@@ -178,7 +247,7 @@ pub trait VcsBackend: Send {
     /// Returns error if not supported (default).
     fn get_commit_range_diff(
         &self,
-        _commit_ids: &[String],
+        _revision_range: &ResolvedRevisionRange<'_>,
         _highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
