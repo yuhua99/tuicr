@@ -16,9 +16,9 @@ use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
     apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
-    diff_stat_title, hunk_header_text_and_style, is_line_highlighted, paint_unified_diff_rows_with,
-    paint_visual_selection_overlay, populate_row_to_annotation, push_comment_bar,
-    render_expander_line, render_hidden_lines, scroll_comment_input_into_view,
+    diff_stat_title, hunk_header_text_and_style, paint_cursor_line_highlight,
+    paint_unified_diff_rows_with, paint_visual_selection_overlay, populate_row_to_annotation,
+    push_comment_bar, render_expander_line, render_hidden_lines, scroll_comment_input_into_view,
     unified_line_bg_style,
 };
 use crate::ui::styles;
@@ -1191,17 +1191,13 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     // Cursor-line bg has to land after the paragraph: spans on +/- lines carry
     // explicit diff_add_bg/diff_del_bg that would mask a pre-paint over the code.
-    if app.cursor_line_highlight {
-        paint_unified_diff_rows_with(
-            frame,
-            inner,
-            &visible_lines_unscrolled_for_bg,
-            &row_heights,
-            |idx, _line| {
-                is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
-            },
-        );
-    }
+    paint_cursor_line_highlight(
+        frame,
+        inner,
+        &visible_lines_unscrolled_for_bg,
+        &row_heights,
+        app,
+    );
 
     if let Some(sel) = app.visual_selection {
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);

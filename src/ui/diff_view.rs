@@ -504,6 +504,31 @@ pub(super) fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style>
     Some(Style::default().bg(bg))
 }
 
+/// Paint the cursor-line background across visible logical lines, expanding
+/// each highlighted line to cover all of its wrapped visual rows. Shared by
+/// unified and side-by-side views so they can't drift out of sync — mismatched
+/// logical/visual indexing was the exact bug this helper prevents.
+pub(super) fn paint_cursor_line_highlight(
+    frame: &mut Frame,
+    inner: Rect,
+    visible_lines_unscrolled: &[Line],
+    row_heights: &[usize],
+    app: &App,
+) {
+    if !app.cursor_line_highlight {
+        return;
+    }
+    paint_unified_diff_rows_with(
+        frame,
+        inner,
+        visible_lines_unscrolled,
+        row_heights,
+        |idx, _line| {
+            is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
+        },
+    );
+}
+
 pub(super) fn paint_unified_diff_rows_with<F>(
     frame: &mut Frame,
     inner: Rect,
