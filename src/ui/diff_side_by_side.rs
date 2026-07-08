@@ -488,11 +488,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             render_sbs_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
-                                ctx.current_line_idx,
                                 expanded_line,
-                                ctx.content_width,
-                                &app.theme,
-                                lw,
+                                &ctx,
                             );
                         }
                     }
@@ -564,11 +561,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             render_sbs_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
-                                ctx.current_line_idx,
                                 expanded_line,
-                                ctx.content_width,
-                                &app.theme,
-                                lw,
+                                &ctx,
                             );
                         }
                     }
@@ -642,11 +636,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         render_sbs_expanded_context_line(
                             &mut lines,
                             &mut line_idx,
-                            ctx.current_line_idx,
                             expanded_line,
-                            ctx.content_width,
-                            &app.theme,
-                            lw,
+                            &ctx,
                         );
                     }
                 }
@@ -678,11 +669,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         render_sbs_expanded_context_line(
                             &mut lines,
                             &mut line_idx,
-                            ctx.current_line_idx,
                             expanded_line,
-                            ctx.content_width,
-                            &app.theme,
-                            lw,
+                            &ctx,
                         );
                     }
                 }
@@ -850,13 +838,13 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 fn render_sbs_expanded_context_line(
     lines: &mut Vec<Line<'_>>,
     line_idx: &mut usize,
-    current_line_idx: usize,
     expanded_line: &crate::model::DiffLine,
-    content_width: usize,
-    theme: &Theme,
-    lw: usize,
+    ctx: &SideBySideContext,
 ) {
-    let indicator = cursor_indicator(*line_idx, current_line_idx);
+    let theme = ctx.theme;
+    let lw = ctx.lineno_width;
+    let content_width = ctx.content_width;
+    let indicator = cursor_indicator(*line_idx, ctx.current_line_idx);
     let old_line_num = expanded_line
         .old_lineno
         .map(|n| format!("{n:>lw$} "))
@@ -865,20 +853,21 @@ fn render_sbs_expanded_context_line(
         .new_lineno
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1));
+    let ec_style = styles::expanded_context_style(theme);
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(old_line_num, styles::expanded_context_style(theme)),
-        Span::styled(" ", styles::expanded_context_style(theme)),
+        Span::styled(old_line_num, ec_style),
+        Span::styled(" ", ec_style),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
-            styles::expanded_context_style(theme),
+            ec_style,
         ),
         Span::styled(" │ ", styles::dim_style(theme)),
-        Span::styled(new_line_num, styles::expanded_context_style(theme)),
-        Span::styled(" ", styles::expanded_context_style(theme)),
+        Span::styled(new_line_num, ec_style),
+        Span::styled(" ", ec_style),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
-            styles::expanded_context_style(theme),
+            ec_style,
         ),
     ];
     lines.push(Line::from(line_spans));
@@ -1086,6 +1075,8 @@ fn render_deletion_addition_pair_side_by_side(
 
     // Render each pair of deletion/addition
     for offset in 0..max_lines {
+        let del_opt = (offset < del_count).then(|| &hunk_lines[start_idx + offset]);
+        let add_opt = (offset < add_count).then(|| &hunk_lines[add_start + offset]);
         if ctx.is_visible(line_idx) {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
@@ -1095,8 +1086,7 @@ fn render_deletion_addition_pair_side_by_side(
             )];
 
             // Left side (deletion)
-            if offset < del_count {
-                let del_line = &hunk_lines[start_idx + offset];
+            if let Some(del_line) = del_opt {
                 add_deletion_spans(
                     ctx.theme,
                     &mut spans,
@@ -1111,8 +1101,7 @@ fn render_deletion_addition_pair_side_by_side(
             spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
 
             // Right side (addition)
-            if offset < add_count {
-                let add_line = &hunk_lines[add_start + offset];
+            if let Some(add_line) = add_opt {
                 add_addition_spans(
                     ctx.theme,
                     &mut spans,
@@ -1131,62 +1120,60 @@ fn render_deletion_addition_pair_side_by_side(
         line_idx += 1;
 
         // Add comments for deletion
-        if offset < del_count {
-            let del_line = &hunk_lines[start_idx + offset];
-            if let Some(old_ln) = del_line.old_lineno {
-                let (new_line_idx, cursor_info) = add_comments_to_line(
+        if let Some(del_line) = del_opt
+            && let Some(old_ln) = del_line.old_lineno
+        {
+            let (new_line_idx, cursor_info) = add_comments_to_line(
+                old_ln,
+                line_comments,
+                LineSide::Old,
+                ctx,
+                file_idx,
+                line_idx,
+                lines,
+            );
+            line_idx = new_line_idx;
+            if cursor_info.is_some() {
+                cursor_info_out = cursor_info;
+            }
+            if let Some(file) = ctx.app.diff_files.get(file_idx) {
+                line_idx = add_remote_threads_to_line(
                     old_ln,
-                    line_comments,
                     LineSide::Old,
                     ctx,
-                    file_idx,
+                    file.display_path(),
                     line_idx,
                     lines,
                 );
-                line_idx = new_line_idx;
-                if cursor_info.is_some() {
-                    cursor_info_out = cursor_info;
-                }
-                if let Some(file) = ctx.app.diff_files.get(file_idx) {
-                    line_idx = add_remote_threads_to_line(
-                        old_ln,
-                        LineSide::Old,
-                        ctx,
-                        file.display_path(),
-                        line_idx,
-                        lines,
-                    );
-                }
             }
         }
 
         // Add comments for addition
-        if offset < add_count {
-            let add_line = &hunk_lines[add_start + offset];
-            if let Some(new_ln) = add_line.new_lineno {
-                let (new_line_idx, cursor_info) = add_comments_to_line(
+        if let Some(add_line) = add_opt
+            && let Some(new_ln) = add_line.new_lineno
+        {
+            let (new_line_idx, cursor_info) = add_comments_to_line(
+                new_ln,
+                line_comments,
+                LineSide::New,
+                ctx,
+                file_idx,
+                line_idx,
+                lines,
+            );
+            line_idx = new_line_idx;
+            if cursor_info.is_some() {
+                cursor_info_out = cursor_info;
+            }
+            if let Some(file) = ctx.app.diff_files.get(file_idx) {
+                line_idx = add_remote_threads_to_line(
                     new_ln,
-                    line_comments,
                     LineSide::New,
                     ctx,
-                    file_idx,
+                    file.display_path(),
                     line_idx,
                     lines,
                 );
-                line_idx = new_line_idx;
-                if cursor_info.is_some() {
-                    cursor_info_out = cursor_info;
-                }
-                if let Some(file) = ctx.app.diff_files.get(file_idx) {
-                    line_idx = add_remote_threads_to_line(
-                        new_ln,
-                        LineSide::New,
-                        ctx,
-                        file.display_path(),
-                        line_idx,
-                        lines,
-                    );
-                }
             }
         }
     }
