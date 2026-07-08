@@ -3,7 +3,6 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
 };
 
 use crate::app::{
@@ -504,6 +503,31 @@ pub(super) fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style>
     Some(Style::default().bg(bg))
 }
 
+/// Paint the cursor-line background across visible logical lines, expanding
+/// each highlighted line to cover all of its wrapped visual rows. Shared by
+/// unified and side-by-side views so they can't drift out of sync — mismatched
+/// logical/visual indexing was the exact bug this helper prevents.
+pub(super) fn paint_cursor_line_highlight(
+    frame: &mut Frame,
+    inner: Rect,
+    visible_lines_unscrolled: &[Line],
+    row_heights: &[usize],
+    app: &App,
+) {
+    if !app.cursor_line_highlight {
+        return;
+    }
+    paint_unified_diff_rows_with(
+        frame,
+        inner,
+        visible_lines_unscrolled,
+        row_heights,
+        |idx, _line| {
+            is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
+        },
+    );
+}
+
 pub(super) fn paint_unified_diff_rows_with<F>(
     frame: &mut Frame,
     inner: Rect,
@@ -728,16 +752,18 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
     let style = styles::file_header_style(ctx.theme);
     let fg = style.fg.unwrap_or(ctx.theme.fg_primary);
 
-    // Walk visible logical rows once, mapping each to its first visual row.
-    let mut row_visual: Vec<(usize, u16)> = Vec::with_capacity(ctx.visible_lines_unscrolled.len());
+    // Walk visible logical rows once, mapping each to its first visual row
+    // and its visual row count so wrapped rows also get the bar glyph.
+    let mut row_visual: Vec<(usize, u16, usize)> =
+        Vec::with_capacity(ctx.visible_lines_unscrolled.len());
     let mut visual_row: usize = 0;
     for (idx, _) in ctx.visible_lines_unscrolled.iter().enumerate() {
         if visual_row >= ctx.inner.height as usize {
             break;
         }
         let logical = ctx.scroll_offset + idx;
-        row_visual.push((logical, ctx.inner.y + visual_row as u16));
         let rows = visual_rows_for_line(ctx.row_heights, idx);
+        row_visual.push((logical, ctx.inner.y + visual_row as u16, rows));
         visual_row += rows;
     }
 
@@ -747,23 +773,29 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
         }
         let bar_top_logical = anchor.box_top_row.saturating_sub(anchor.height);
         // Bar covers logical rows [bar_top_logical, box_top_row - 1].
-        for (logical, y) in &row_visual {
+        for (logical, y, rows) in &row_visual {
             if *logical >= anchor.box_top_row {
                 break;
             }
             if *logical < bar_top_logical {
                 continue;
             }
-            let glyph = if *logical == bar_top_logical {
-                '╭'
-            } else {
-                '│'
-            };
-            let cell = &mut frame.buffer_mut()[(bar_screen_col, *y)];
-            cell.set_char(glyph);
-            cell.set_fg(fg);
-            if let Some(bg) = style.bg {
-                cell.set_bg(bg);
+            for r in 0..*rows {
+                let y = *y + r as u16;
+                if y >= ctx.inner.y + ctx.inner.height {
+                    break;
+                }
+                let glyph = if *logical == bar_top_logical && r == 0 {
+                    '╭'
+                } else {
+                    '│'
+                };
+                let cell = &mut frame.buffer_mut()[(bar_screen_col, y)];
+                cell.set_char(glyph);
+                cell.set_fg(fg);
+                if let Some(bg) = style.bg {
+                    cell.set_bg(bg);
+                }
             }
         }
     }
@@ -883,37 +915,6 @@ fn is_file_header_line(line: &Line) -> bool {
         .unwrap_or(false)
 }
 
-/// Number of visual (screen) rows each logical line occupies once rendered.
-///
-/// When wrapping is on this must match the `Paragraph`'s word wrap
-/// (`Wrap { trim: false }`) exactly, so it reuses ratatui's own
-/// [`Paragraph::line_count`]. A plain `div_ceil(width, viewport)` assumes
-/// character packing and *under-counts* prose lines that word-wrap (a word
-/// pushed to the next row leaves the first row short of the viewport width).
-/// That under-count made every per-row background/overlay paint below such a
-/// line drift upward relative to the rendered text.
-///
-/// Computed once per frame and shared by all row-mapping consumers.
-pub(super) fn compute_row_heights(
-    lines: &[Line],
-    wrap_lines: bool,
-    viewport_width: usize,
-) -> Vec<usize> {
-    if !wrap_lines || viewport_width == 0 {
-        return vec![1; lines.len()];
-    }
-    let width = viewport_width as u16;
-    lines
-        .iter()
-        .map(|line| {
-            Paragraph::new(line.clone())
-                .wrap(Wrap { trim: false })
-                .line_count(width)
-                .max(1)
-        })
-        .collect()
-}
-
 fn visual_rows_for_line(row_heights: &[usize], idx: usize) -> usize {
     row_heights.get(idx).copied().unwrap_or(1)
 }
@@ -1025,50 +1026,5 @@ mod tests {
         scroll_comment_input_into_view(&mut scroll, Some((8, 10)), Some(9), 10, 100);
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
-    }
-
-    /// Reference height straight from ratatui's renderer — the value
-    /// `compute_row_heights` must reproduce for per-row paints to align.
-    fn rendered_height(line: &Line, width: u16) -> usize {
-        Paragraph::new(line.clone())
-            .wrap(Wrap { trim: false })
-            .line_count(width)
-    }
-
-    #[test]
-    fn should_count_one_row_per_line_when_wrap_disabled() {
-        let lines = vec![Line::from("a".repeat(200)), Line::from("short")];
-        assert_eq!(compute_row_heights(&lines, false, 80), vec![1, 1]);
-    }
-
-    #[test]
-    fn should_match_rendered_height_for_word_wrapped_prose() {
-        // given: a prose line whose words can't be split, so word-wrap takes
-        // more rows than character packing predicts.
-        let line = Line::from(
-            "PR review sessions are keyed by forge coordinates rather than a local checkout",
-        );
-        let width = 20usize;
-
-        // then: our count matches what the Paragraph actually renders...
-        let heights = compute_row_heights(std::slice::from_ref(&line), true, width);
-        assert_eq!(heights[0], rendered_height(&line, width as u16));
-
-        // ...and it exceeds the naive char-packing estimate that caused the
-        // background/marker drift (regression guard).
-        let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
-        assert!(
-            heights[0] > total_width.div_ceil(width),
-            "word wrap should take more rows than div_ceil for this prose line: \
-             got {} vs div_ceil {}",
-            heights[0],
-            total_width.div_ceil(width),
-        );
-    }
-
-    #[test]
-    fn should_treat_empty_line_as_one_row() {
-        let lines = vec![Line::from("")];
-        assert_eq!(compute_row_heights(&lines, true, 80), vec![1]);
     }
 }
