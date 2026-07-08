@@ -105,7 +105,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         return vec![spans.to_vec()];
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Copy)]
     struct Item {
         ch: char,
         style: Style,
@@ -136,11 +136,12 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             *unit_w = 0;
             return;
         }
-        while !unit.is_empty() {
+        let mut pos = 0;
+        while pos < unit.len() {
             let remaining = width.saturating_sub(*current_w);
             let mut consumed = 0usize;
             let mut consumed_w = 0usize;
-            for it in unit.iter() {
+            for it in &unit[pos..] {
                 if consumed_w + it.w > remaining {
                     break;
                 }
@@ -149,26 +150,22 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             }
             if consumed == 0 {
                 if current.is_empty() {
-                    let it = unit.remove(0);
-                    let w = it.w;
-                    current.push(it);
-                    *current_w = w;
-                    rows.push(std::mem::take(current));
-                    *current_w = 0;
-                } else {
-                    rows.push(std::mem::take(current));
-                    *current_w = 0;
+                    current.push(unit[pos]);
+                    pos += 1;
                 }
+                rows.push(std::mem::take(current));
+                *current_w = 0;
             } else {
-                let drained: Vec<Item> = unit.drain(..consumed).collect();
-                current.extend(drained);
+                current.extend_from_slice(&unit[pos..pos + consumed]);
+                pos += consumed;
                 *current_w += consumed_w;
-                if !unit.is_empty() {
+                if pos < unit.len() {
                     rows.push(std::mem::take(current));
                     *current_w = 0;
                 }
             }
         }
+        unit.clear();
         *unit_w = 0;
     }
 
