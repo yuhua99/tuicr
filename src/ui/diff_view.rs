@@ -752,16 +752,18 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
     let style = styles::file_header_style(ctx.theme);
     let fg = style.fg.unwrap_or(ctx.theme.fg_primary);
 
-    // Walk visible logical rows once, mapping each to its first visual row.
-    let mut row_visual: Vec<(usize, u16)> = Vec::with_capacity(ctx.visible_lines_unscrolled.len());
+    // Walk visible logical rows once, mapping each to its first visual row
+    // and its visual row count so wrapped rows also get the bar glyph.
+    let mut row_visual: Vec<(usize, u16, usize)> =
+        Vec::with_capacity(ctx.visible_lines_unscrolled.len());
     let mut visual_row: usize = 0;
     for (idx, _) in ctx.visible_lines_unscrolled.iter().enumerate() {
         if visual_row >= ctx.inner.height as usize {
             break;
         }
         let logical = ctx.scroll_offset + idx;
-        row_visual.push((logical, ctx.inner.y + visual_row as u16));
         let rows = visual_rows_for_line(ctx.row_heights, idx);
+        row_visual.push((logical, ctx.inner.y + visual_row as u16, rows));
         visual_row += rows;
     }
 
@@ -771,23 +773,29 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
         }
         let bar_top_logical = anchor.box_top_row.saturating_sub(anchor.height);
         // Bar covers logical rows [bar_top_logical, box_top_row - 1].
-        for (logical, y) in &row_visual {
+        for (logical, y, rows) in &row_visual {
             if *logical >= anchor.box_top_row {
                 break;
             }
             if *logical < bar_top_logical {
                 continue;
             }
-            let glyph = if *logical == bar_top_logical {
-                '╭'
-            } else {
-                '│'
-            };
-            let cell = &mut frame.buffer_mut()[(bar_screen_col, *y)];
-            cell.set_char(glyph);
-            cell.set_fg(fg);
-            if let Some(bg) = style.bg {
-                cell.set_bg(bg);
+            for r in 0..*rows {
+                let y = *y + r as u16;
+                if y >= ctx.inner.y + ctx.inner.height {
+                    break;
+                }
+                let glyph = if *logical == bar_top_logical && r == 0 {
+                    '╭'
+                } else {
+                    '│'
+                };
+                let cell = &mut frame.buffer_mut()[(bar_screen_col, y)];
+                cell.set_char(glyph);
+                cell.set_fg(fg);
+                if let Some(bg) = style.bg {
+                    cell.set_bg(bg);
+                }
             }
         }
     }

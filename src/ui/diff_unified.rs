@@ -1831,4 +1831,94 @@ mod remote_comments_snapshot_tests {
             app.diff_state.visible_line_count
         );
     }
+
+    #[test]
+    fn should_extend_comment_bar_over_wrapped_rows_when_wrap_enabled() {
+        use crate::model::{Comment, CommentType};
+
+        let long: String = "x".repeat(200);
+        let hunk = DiffHunk {
+            header: "@@ -0,0 +1,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: long.clone(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            }],
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let path = PathBuf::from("src/lib.rs");
+        let file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+        let mut app = make_revision_app(vec![file]);
+        app.set_diff_wrap(true);
+
+        let file_review = app
+            .session
+            .get_file_mut(&path)
+            .expect("file registered in session");
+        file_review.add_line_comment(
+            1,
+            Comment::new("needs a rename".to_string(), CommentType::Note, None),
+        );
+        app.rebuild_annotations();
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let mut cap: Option<(u16, u16)> = None;
+        let mut cap_count = 0;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if buffer[(x, y)].symbol() == "╭" {
+                    cap = Some((x, y));
+                    cap_count += 1;
+                }
+            }
+        }
+        assert_eq!(
+            cap_count, 1,
+            "expected exactly one ╭ cap in the gutter, got {cap_count}"
+        );
+        let (bar_x, cap_y) = cap.unwrap();
+
+        let mut box_top_y: Option<u16> = None;
+        for y in (cap_y + 1)..buffer.area.height {
+            if buffer[(bar_x, y)].symbol() == "├" {
+                box_top_y = Some(y);
+                break;
+            }
+        }
+        let box_top_y = box_top_y.expect("expected ├ box top below the ╭ cap");
+        assert!(
+            box_top_y > cap_y + 1,
+            "test needs at least one row between cap and box top; cap_y={cap_y} box_top_y={box_top_y}"
+        );
+
+        for y in (cap_y + 1)..box_top_y {
+            let glyph = buffer[(bar_x, y)].symbol();
+            assert_eq!(
+                glyph, "│",
+                "expected │ at ({bar_x},{y}) between cap ({cap_y}) and box top ({box_top_y}), got {glyph:?}"
+            );
+        }
+    }
 }
